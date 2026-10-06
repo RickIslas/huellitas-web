@@ -1,0 +1,27 @@
+﻿name: CI/CD Pipeline - Huellitas Web
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build_and_test:
+    name: 1. Integracion Continua (Build & Lint)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar codigo fuente
+        uses: actions/checkout@v4
+
+      - name: Configurar entorno Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Instalar dependencias limpias
+        run: npm ci
+
+      - name: Ejecutar compilacion de produccion
+        run: npm run build
