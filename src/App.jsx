@@ -4,7 +4,7 @@ import {
   CheckCircle2, MapPin, Calendar, Search, Menu, X, ExternalLink,
   MessageCircle, Star, Sparkles, BarChart3, Lock, LogOut,
   Database, HandHeart, Building2, Upload, UserCheck, Settings, ShieldCheck,
-  PhoneCall, Navigation
+  PhoneCall, Navigation, Clock
 } from "lucide-react";
 import {
   collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, setDoc, getDoc, serverTimestamp
@@ -69,7 +69,6 @@ const compressImageFile = (file, maxWidth = 700, quality = 0.78) =>
     reader.onerror = (err) => reject(err);
   });
 
-// Formateador de número telefónico para enlaces de WhatsApp (Código 52 México)
 const formatWhatsAppNumber = (rawPhone = "") => {
   const digits = String(rawPhone).replace(/\D/g, "");
   if (!digits) return "";
@@ -324,6 +323,9 @@ export default function App() {
   const [alertSubTab, setAlertSubTab] = useState("ver");
   const [adminSubTab, setAdminSubTab] = useState("general");
 
+  // Interruptor del Módulo de Donaciones (Deshabilitado por defecto -> "Próximamente")
+  const [donationsEnabled, setDonationsEnabled] = useState(false);
+
   // Colecciones en Tiempo Real
   const [pets, setPets] = useState(INITIAL_PETS);
   const [reports, setReports] = useState(INITIAL_REPORTS);
@@ -340,8 +342,8 @@ export default function App() {
 
   // Autenticación y Perfil Persistente
   const [currentUser, setCurrentUser] = useState(null);
-  const [authPortal, setAuthPortal] = useState("user"); // "user" | "admin"
-  const [authMode, setAuthMode] = useState("login"); // "login" | "register"
+  const [authPortal, setAuthPortal] = useState("user");
+  const [authMode, setAuthMode] = useState("login");
   const [authForm, setAuthForm] = useState({
     name: "",
     email: "",
@@ -421,7 +423,7 @@ export default function App() {
     logo: ""
   });
 
-  // Estado Formulario Reportar Mascota Perdida (Con GPS y Teléfono/WhatsApp)
+  // Estado Formulario Reportar Mascota Perdida (Con GPS y WhatsApp)
   const [isGettingGps, setIsGettingGps] = useState(false);
   const [reportForm, setReportForm] = useState({
     animalName: "",
@@ -444,7 +446,6 @@ export default function App() {
   const [selectedShelterForDonation, setSelectedShelterForDonation] = useState("Fundación Patitas Neza");
   const [donorName, setDonorName] = useState("");
 
-  // Rol verificado estrictamente desde Firestore
   const isAdmin = currentUser?.role === "Administrador";
 
   // ==========================================
@@ -489,6 +490,19 @@ export default function App() {
       }
     });
 
+    // Escuchar la configuración global (Habilitar / Deshabilitar Donaciones)
+    const unsubSettings = onSnapshot(
+      doc(db, "settings", "config"),
+      (docSnap) => {
+        if (docSnap.exists() && typeof docSnap.data().donationsEnabled === "boolean") {
+          setDonationsEnabled(docSnap.data().donationsEnabled);
+        }
+      },
+      () => {
+        // Si aún no está creada la regla o documento, conserva el estado local
+      }
+    );
+
     return () => {
       unsubPets();
       unsubReports();
@@ -496,6 +510,7 @@ export default function App() {
       unsubUsers();
       unsubDonations();
       unsubAdoptions();
+      unsubSettings();
     };
   }, []);
 
@@ -544,7 +559,6 @@ export default function App() {
           await setDoc(userRef, newProfile);
         }
 
-        // Escuchar en tiempo real el documento del usuario por si se le asigna "Administrador" en Firebase Console
         unsubUserDoc = onSnapshot(userRef, (docSnap) => {
           if (docSnap.exists()) {
             const data = docSnap.data();
@@ -576,7 +590,6 @@ export default function App() {
     };
   }, []);
 
-  // Auto-llenar formularios con los datos guardados del perfil activo
   useEffect(() => {
     if (currentUser) {
       setAdoptionForm((prev) => ({
@@ -598,7 +611,36 @@ export default function App() {
   }, [currentUser]);
 
   // ==========================================
-  // 3. OBTENER UBICACIÓN EXACTA POR GPS (MÓVIL / NAVEGADOR)
+  // 3. INTERRUPTOR DEL MÓDULO DE DONACIONES (ADMIN)
+  // ==========================================
+  const handleToggleDonationsModule = async () => {
+    if (!isAdmin) return;
+    const nextState = !donationsEnabled;
+    setDonationsEnabled(nextState);
+    try {
+      if (isFirebaseConfigured && db) {
+        await setDoc(
+          doc(db, "settings", "config"),
+          { donationsEnabled: nextState, updatedAt: serverTimestamp() },
+          { merge: true }
+        );
+      }
+      showToast(
+        nextState
+          ? "✅ Módulo de Donaciones HABILITADO para todo el público."
+          : "⏸️ Módulo de Donaciones DESHABILITADO (Mostrando pantalla 'Próximamente')."
+      );
+    } catch {
+      showToast(
+        nextState
+          ? "✅ Módulo de Donaciones habilitado en esta sesión."
+          : "⏸️ Módulo de Donaciones en modo 'Próximamente'."
+      );
+    }
+  };
+
+  // ==========================================
+  // 4. OBTENER UBICACIÓN EXACTA POR GPS
   // ==========================================
   const handleGetGpsLocation = () => {
     if (!("geolocation" in navigator)) {
@@ -624,7 +666,7 @@ export default function App() {
             }
           }
         } catch {
-          // Si no hay respuesta de geocodificación inversa, se conservan las coordenadas exactas
+          // Conservar coordenadas si falla la red
         }
 
         setReportForm((prev) => ({
@@ -639,7 +681,7 @@ export default function App() {
       (error) => {
         setIsGettingGps(false);
         showToast(
-          "No se pudo obtener el GPS (" + error.message + "). Verifica dar permiso de ubicación en tu celular/navegador.",
+          "No se pudo obtener el GPS (" + error.message + "). Verifica dar permiso de ubicación.",
           "error"
         );
       },
@@ -648,7 +690,7 @@ export default function App() {
   };
 
   // ==========================================
-  // 4. SUBIDA DE FOTOS DESDE DISPOSITIVO
+  // 5. SUBIDA DE FOTOS DESDE DISPOSITIVO
   // ==========================================
   const handleImageUpload = async (e, targetType) => {
     const file = e.target.files?.[0];
@@ -671,7 +713,7 @@ export default function App() {
   };
 
   // ==========================================
-  // 5. AUTENTICACIÓN SEGURA (FIREBASE AUTH + FIRESTORE ROLES)
+  // 6. AUTENTICACIÓN SEGURA
   // ==========================================
   const handleGoogleLogin = async () => {
     if (!isFirebaseConfigured || !auth || !googleProvider) {
@@ -724,7 +766,7 @@ export default function App() {
           municipality: authForm.municipality || "Nezahualcóyotl",
           address: "",
           bio: "Adoptante registrado en Huellitas",
-          role: "Usuario", // Seguridad estricta: el rol Admin solo se otorga en Firebase Firestore
+          role: "Usuario",
           housingType: "Casa con patio",
           hasOtherPets: "No",
           experienceLevel: "Intermedia",
@@ -816,7 +858,7 @@ export default function App() {
   };
 
   // ==========================================
-  // 6. OPERACIONES DE NEGOCIO Y ADMIN CRUD
+  // 7. OPERACIONES DE NEGOCIO Y ADMIN CRUD
   // ==========================================
   const seedFirebaseDatabase = async () => {
     if (!isFirebaseConfigured || !isAdmin) return;
@@ -1047,7 +1089,6 @@ export default function App() {
     }
   };
 
-  // Publicar Reporte de Mascota Perdida con Teléfono/WhatsApp y GPS
   const handleReportSubmit = async (e) => {
     e.preventDefault();
     const defaultImg = "https://images.unsplash.com/photo-1583511655857-d19b40a7a54e?auto=format&fit=crop&w=600&q=80";
@@ -1455,9 +1496,16 @@ export default function App() {
                   <div className="w-12 h-12 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center mb-4">
                     <HandHeart className="w-6 h-6" />
                   </div>
-                  <h3 className="text-lg font-extrabold text-sky-950">Donaciones Transparentes</h3>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-lg font-extrabold text-sky-950">Donaciones</h3>
+                    {!donationsEnabled && (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-100 text-amber-800">
+                        Próximamente
+                      </span>
+                    )}
+                  </div>
                   <p className="text-sm text-slate-600 mt-2 leading-relaxed">
-                    Elige el refugio que deseas apoyar y genera un folio único de trazabilidad para alimento, vacunas o esterilizaciones.
+                    Apoya a los refugios aliados con alimento, vacunas o esterilizaciones con trazabilidad transparente.
                   </p>
                 </div>
                 <button
@@ -1465,7 +1513,7 @@ export default function App() {
                   onClick={() => setActiveTab("donaciones")}
                   className="mt-6 w-full py-2.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-xs transition cursor-pointer"
                 >
-                  Donar Ahora →
+                  {donationsEnabled ? "Donar Ahora →" : "Ver Información →"}
                 </button>
               </div>
             </section>
@@ -1480,7 +1528,7 @@ export default function App() {
             <div className="bg-white/75 backdrop-blur-md border border-white rounded-3xl p-6 sm:p-10 shadow-xl grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
               <div className="lg:col-span-7 space-y-4">
                 <span className="px-3 py-1 rounded-full text-xs font-bold bg-sky-100 text-sky-800">
-                  División de Informática y Computación • UTN
+                  Cody Go & TechNova
                 </span>
                 <h2 className="text-3xl font-black text-sky-950">Nosotros</h2>
                 <p className="text-slate-700 leading-relaxed">
@@ -1907,7 +1955,6 @@ export default function App() {
                         </div>
                       </div>
 
-                      {/* ATAJOS DIRECTOS: WHATSAPP, LLAMADA Y MAPA GPS */}
                       <div className="pt-3 border-t border-sky-100 grid grid-cols-1 sm:grid-cols-3 gap-2">
                         {cleanWa && (
                           <a
@@ -2028,7 +2075,6 @@ export default function App() {
                   />
                 </div>
 
-                {/* UBICACIÓN CON BOTÓN DE GPS EN TIEMPO REAL DESDE EL CELULAR */}
                 <div className="p-4 rounded-2xl bg-sky-50 border border-sky-200 space-y-3">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                     <label htmlFor="rep-location" className="block text-xs font-extrabold text-sky-950">
@@ -2118,7 +2164,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* DATOS DE CONTACTO DIRECTO (WHATSAPP Y TELÉFONO) */}
                 <div className="pt-3 border-t border-sky-100 space-y-3">
                   <h4 className="text-sm font-extrabold text-sky-950">
                     Datos del Dueño / Reportante (Para crear el atajo directo de WhatsApp y Llamada)
@@ -2290,132 +2335,206 @@ export default function App() {
         )}
 
         {/* ==========================================
-            6. VISTA: DONACIONES
+            6. VISTA: DONACIONES (HABILITADA O "PRÓXIMAMENTE" SEGÚN ADMIN)
         ========================================== */}
         {activeTab === "donaciones" && (
-          <div className="max-w-4xl mx-auto space-y-8">
-            <div className="bg-white/80 backdrop-blur-md border border-white rounded-3xl p-6 sm:p-10 shadow-xl space-y-6">
-              <div className="text-center max-w-xl mx-auto space-y-2">
-                <span className="px-3.5 py-1 rounded-full text-xs font-bold bg-rose-100 text-rose-700">
-                  Trazabilidad Financiera con Folio Único
-                </span>
-                <h2 className="text-3xl font-black text-sky-950">
-                  Dona y cambia una vida
-                </h2>
-                <p className="text-sm text-slate-600">
-                  Selecciona el monto y el refugio destinatario. Tu aportación queda registrada en tiempo real en el libro de finanzas.
-                </p>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                {[
-                  { amount: 150, desc: "3 días de alimento", icon: "🥣" },
-                  { amount: 300, desc: "Vacuna y desparasitación", icon: "💉" },
-                  { amount: 500, desc: "Esterilización", icon: "🩺" },
-                  { amount: 1000, desc: "Rescate + kit inicial", icon: "🚑" }
-                ].map((tier) => (
-                  <button
-                    key={tier.amount}
-                    type="button"
-                    onClick={() => {
-                      setSelectedAmount(tier.amount);
-                      setCustomAmount("");
-                    }}
-                    className={`p-4 rounded-2xl border-2 text-left transition cursor-pointer ${
-                      selectedAmount === tier.amount && !customAmount
-                        ? "border-sky-600 bg-sky-50/90 shadow-md"
-                        : "border-sky-100 bg-white hover:border-sky-300"
-                    }`}
-                  >
-                    <span className="text-2xl">{tier.icon}</span>
-                    <div className="text-xl font-black text-sky-950 mt-2">
-                      ${tier.amount} <span className="text-xs font-semibold">MXN</span>
-                    </div>
-                    <p className="text-xs font-semibold text-sky-700 mt-1">
-                      “{tier.desc}”
-                    </p>
-                  </button>
-                ))}
-              </div>
-
-              <form onSubmit={handleDonationSubmit} className="space-y-4 pt-2">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label htmlFor="don-donor-name" className="block text-xs font-bold text-slate-700 mb-1">
-                      Nombre del Donante
-                    </label>
-                    <input
-                      id="don-donor-name"
-                      type="text"
-                      placeholder="Tu nombre o Anónimo"
-                      value={donorName}
-                      onChange={(e) => setDonorName(e.target.value)}
-                      className="w-full px-4 py-2.5 rounded-xl bg-white border border-sky-200 text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label htmlFor="don-shelter-select" className="block text-xs font-bold text-slate-700 mb-1">
-                      Refugio Destinatario
-                    </label>
-                    <select
-                      id="don-shelter-select"
-                      value={selectedShelterForDonation}
-                      onChange={(e) => setSelectedShelterForDonation(e.target.value)}
-                      className="w-full px-4 py-2.5 rounded-xl bg-white border border-sky-200 text-sm font-semibold"
-                    >
-                      {shelters.map((s) => (
-                        <option key={s.id} value={s.name}>
-                          {s.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+          <div className="max-w-4xl mx-auto space-y-6">
+            {/* Barra rápida exclusiva para el Administrador */}
+            {isAdmin && (
+              <div className="bg-sky-950 text-white rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-lg">
+                <div className="flex items-center gap-2.5 text-xs">
+                  <ShieldCheck className="w-5 h-5 text-cyan-400 shrink-0" />
+                  <span>
+                    <strong>Vista de Administrador:</strong> El módulo público de Donaciones actualmente está{" "}
+                    <span className={donationsEnabled ? "text-emerald-400 font-black" : "text-amber-400 font-black"}>
+                      {donationsEnabled ? "HABILITADO" : "DESHABILITADO (Modo Próximamente)"}
+                    </span>
+                  </span>
                 </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label htmlFor="don-custom-amount" className="block text-xs font-bold text-slate-700 mb-1">
-                      Monto Libre (Opcional en MXN)
-                    </label>
-                    <input
-                      id="don-custom-amount"
-                      type="number"
-                      min="10"
-                      placeholder="Otro monto ($ MXN)"
-                      value={customAmount}
-                      onChange={(e) => setCustomAmount(e.target.value)}
-                      className="w-full px-4 py-2.5 rounded-xl bg-white border border-sky-200 text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label htmlFor="don-payment-method" className="block text-xs font-bold text-slate-700 mb-1">
-                      Método de Pago
-                    </label>
-                    <select
-                      id="don-payment-method"
-                      value={paymentMethod}
-                      onChange={(e) => setPaymentMethod(e.target.value)}
-                      className="w-full px-4 py-2.5 rounded-xl bg-white border border-sky-200 text-sm font-semibold"
-                    >
-                      <option value="Mercado Pago">Mercado Pago</option>
-                      <option value="PayPal">PayPal</option>
-                    </select>
-                  </div>
-                </div>
-
                 <button
-                  type="submit"
-                  className="w-full py-3.5 rounded-2xl bg-linear-to-r from-sky-600 to-cyan-600 hover:from-sky-700 hover:to-cyan-700 text-white font-extrabold text-sm shadow-lg transition cursor-pointer"
+                  type="button"
+                  onClick={handleToggleDonationsModule}
+                  className={`px-4 py-2 rounded-xl text-xs font-extrabold transition cursor-pointer shrink-0 ${
+                    donationsEnabled
+                      ? "bg-amber-500 hover:bg-amber-600 text-slate-950"
+                      : "bg-emerald-500 hover:bg-emerald-600 text-white"
+                  }`}
                 >
-                  Confirmar Donación de ${customAmount || selectedAmount} MXN a {selectedShelterForDonation}
+                  {donationsEnabled ? "Pausar y Poner 'Próximamente'" : "Habilitar Donaciones Ahora"}
                 </button>
-              </form>
-            </div>
+              </div>
+            )}
+
+            {!donationsEnabled ? (
+              /* PANTALLA DE "PRÓXIMAMENTE / NO DISPONIBLE TEMPORALMENTE" */
+              <div className="bg-white/85 backdrop-blur-md border border-white rounded-3xl p-8 sm:p-12 shadow-xl text-center space-y-6">
+                <div className="w-20 h-20 rounded-3xl bg-amber-100 text-amber-600 flex items-center justify-center mx-auto shadow-inner">
+                  <Clock className="w-10 h-10" />
+                </div>
+
+                <div className="space-y-2 max-w-xl mx-auto">
+                  <span className="inline-flex items-center gap-1.5 px-4 py-1 rounded-full text-xs font-extrabold uppercase tracking-wider bg-amber-100 text-amber-800 border border-amber-200">
+                    Próximamente • Módulo en Actualización
+                  </span>
+                  <h2 className="text-3xl sm:text-4xl font-black text-sky-950">
+                    Donaciones en Línea Próximamente
+                  </h2>
+                  <p className="text-sm sm:text-base text-slate-600 leading-relaxed pt-1">
+                    Por el momento el sistema de recaudación digital se encuentra deshabilitado temporalmente mientras integramos nuevas validaciones de transparencia con los refugios aliados.
+                  </p>
+                </div>
+
+                <div className="bg-sky-50 border border-sky-100 rounded-2xl p-5 max-w-lg mx-auto text-xs sm:text-sm text-sky-950 space-y-2">
+                  <p className="font-extrabold">
+                    🐾 ¿Deseas apoyar hoy mismo con alimento, medicamentos o insumos en especie?
+                  </p>
+                  <p className="text-slate-600">
+                    Puedes comunicarte directamente por WhatsApp con cualquiera de los refugios verificados en nuestro directorio oficial o postularte para adoptar.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap justify-center gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("refugios")}
+                    className="px-6 py-3 rounded-full bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs sm:text-sm shadow-lg transition cursor-pointer flex items-center gap-2"
+                  >
+                    <Building2 className="w-4 h-4" /> Contactar Refugios Aliados
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("adopciones")}
+                    className="px-6 py-3 rounded-full bg-white hover:bg-sky-50 text-sky-950 font-bold text-xs sm:text-sm border border-sky-200 transition cursor-pointer flex items-center gap-2"
+                  >
+                    <Heart className="w-4 h-4 text-rose-500" /> Ver Mascotas en Adopción
+                  </button>
+                </div>
+              </div>
+            ) : (
+              /* FORMULARIO ACTIVO DE DONACIONES (CUANDO EL ADMIN LO HABILITA) */
+              <div className="bg-white/80 backdrop-blur-md border border-white rounded-3xl p-6 sm:p-10 shadow-xl space-y-6">
+                <div className="text-center max-w-xl mx-auto space-y-2">
+                  <span className="px-3.5 py-1 rounded-full text-xs font-bold bg-rose-100 text-rose-700">
+                    Trazabilidad Financiera con Folio Único
+                  </span>
+                  <h2 className="text-3xl font-black text-sky-950">
+                    Dona y cambia una vida
+                  </h2>
+                  <p className="text-sm text-slate-600">
+                    Selecciona el monto y el refugio destinatario. Tu aportación queda registrada en tiempo real en el libro de finanzas.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  {[
+                    { amount: 150, desc: "3 días de alimento", icon: "🥣" },
+                    { amount: 300, desc: "Vacuna y desparasitación", icon: "💉" },
+                    { amount: 500, desc: "Esterilización", icon: "🩺" },
+                    { amount: 1000, desc: "Rescate + kit inicial", icon: "🚑" }
+                  ].map((tier) => (
+                    <button
+                      key={tier.amount}
+                      type="button"
+                      onClick={() => {
+                        setSelectedAmount(tier.amount);
+                        setCustomAmount("");
+                      }}
+                      className={`p-4 rounded-2xl border-2 text-left transition cursor-pointer ${
+                        selectedAmount === tier.amount && !customAmount
+                          ? "border-sky-600 bg-sky-50/90 shadow-md"
+                          : "border-sky-100 bg-white hover:border-sky-300"
+                      }`}
+                    >
+                      <span className="text-2xl">{tier.icon}</span>
+                      <div className="text-xl font-black text-sky-950 mt-2">
+                        ${tier.amount} <span className="text-xs font-semibold">MXN</span>
+                      </div>
+                      <p className="text-xs font-semibold text-sky-700 mt-1">
+                        “{tier.desc}”
+                      </p>
+                    </button>
+                  ))}
+                </div>
+
+                <form onSubmit={handleDonationSubmit} className="space-y-4 pt-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label htmlFor="don-donor-name" className="block text-xs font-bold text-slate-700 mb-1">
+                        Nombre del Donante
+                      </label>
+                      <input
+                        id="don-donor-name"
+                        type="text"
+                        placeholder="Tu nombre o Anónimo"
+                        value={donorName}
+                        onChange={(e) => setDonorName(e.target.value)}
+                        className="w-full px-4 py-2.5 rounded-xl bg-white border border-sky-200 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="don-shelter-select" className="block text-xs font-bold text-slate-700 mb-1">
+                        Refugio Destinatario
+                      </label>
+                      <select
+                        id="don-shelter-select"
+                        value={selectedShelterForDonation}
+                        onChange={(e) => setSelectedShelterForDonation(e.target.value)}
+                        className="w-full px-4 py-2.5 rounded-xl bg-white border border-sky-200 text-sm font-semibold"
+                      >
+                        {shelters.map((s) => (
+                          <option key={s.id} value={s.name}>
+                            {s.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label htmlFor="don-custom-amount" className="block text-xs font-bold text-slate-700 mb-1">
+                        Monto Libre (Opcional en MXN)
+                      </label>
+                      <input
+                        id="don-custom-amount"
+                        type="number"
+                        min="10"
+                        placeholder="Otro monto ($ MXN)"
+                        value={customAmount}
+                        onChange={(e) => setCustomAmount(e.target.value)}
+                        className="w-full px-4 py-2.5 rounded-xl bg-white border border-sky-200 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="don-payment-method" className="block text-xs font-bold text-slate-700 mb-1">
+                        Método de Pago
+                      </label>
+                      <select
+                        id="don-payment-method"
+                        value={paymentMethod}
+                        onChange={(e) => setPaymentMethod(e.target.value)}
+                        className="w-full px-4 py-2.5 rounded-xl bg-white border border-sky-200 text-sm font-semibold"
+                      >
+                        <option value="Mercado Pago">Mercado Pago</option>
+                        <option value="PayPal">PayPal</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="w-full py-3.5 rounded-2xl bg-linear-to-r from-sky-600 to-cyan-600 hover:from-sky-700 hover:to-cyan-700 text-white font-extrabold text-sm shadow-lg transition cursor-pointer"
+                  >
+                    Confirmar Donación de ${customAmount || selectedAmount} MXN a {selectedShelterForDonation}
+                  </button>
+                </form>
+              </div>
+            )}
           </div>
         )}
 
         {/* ==========================================
-            7. VISTA: MI PERFIL Y PREFERENCIAS DE USUARIO (SIN BOTÓN DE CAMBIO DE ROL)
+            7. VISTA: MI PERFIL Y PREFERENCIAS DE USUARIO
         ========================================== */}
         {activeTab === "perfil" && currentUser && (
           <div className="space-y-8">
@@ -2678,7 +2797,7 @@ export default function App() {
         )}
 
         {/* ==========================================
-            8. VISTA: AUTENTICACIÓN (USUARIOS Y PORTAL ADMIN VERIFICADO EN FIREBASE)
+            8. VISTA: AUTENTICACIÓN
         ========================================== */}
         {activeTab === "auth" && (
           <div className="max-w-md mx-auto bg-white/90 backdrop-blur-md border border-white rounded-3xl p-8 shadow-xl space-y-6">
@@ -2865,7 +2984,7 @@ export default function App() {
         )}
 
         {/* ==========================================
-            9. VISTA: PANEL DE ADMINISTRACIÓN (PROTECCIÓN ESTRICTA)
+            9. VISTA: PANEL DE ADMINISTRACIÓN
         ========================================== */}
         {activeTab === "admin" && (
           !isAdmin ? (
@@ -2951,13 +3070,31 @@ export default function App() {
               <section className="lg:col-span-9 p-6 sm:p-8 space-y-6 overflow-y-auto">
                 {adminSubTab === "general" && (
                   <div className="space-y-6">
-                    <div>
-                      <h2 className="text-2xl font-black text-sky-950">
-                        Panel de Control Ejecutivo — Huellitas
-                      </h2>
-                      <p className="text-xs text-slate-500">
-                        Monitoreo en tiempo real de adopciones, refugios aliados, reportes GPS y recursos financieros.
-                      </p>
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div>
+                        <h2 className="text-2xl font-black text-sky-950">
+                          Panel de Control Ejecutivo — Huellitas
+                        </h2>
+                        <p className="text-xs text-slate-500">
+                          Monitoreo en tiempo real de adopciones, refugios aliados, reportes GPS y módulos del sistema.
+                        </p>
+                      </div>
+
+                      {/* INTERRUPTOR DE DONACIONES EN VISTA GENERAL */}
+                      <button
+                        type="button"
+                        onClick={handleToggleDonationsModule}
+                        className={`px-4 py-2.5 rounded-2xl text-xs font-extrabold shadow transition cursor-pointer flex items-center gap-2 self-start sm:self-auto ${
+                          donationsEnabled
+                            ? "bg-emerald-600 hover:bg-emerald-700 text-white"
+                            : "bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300"
+                        }`}
+                      >
+                        <DollarSign className="w-4 h-4" />
+                        {donationsEnabled
+                          ? "Donaciones: HABILITADAS (Clic para Pausar)"
+                          : "Donaciones: PRÓXIMAMENTE (Clic para Habilitar)"}
+                      </button>
                     </div>
 
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -3315,9 +3452,31 @@ export default function App() {
 
                 {adminSubTab === "finanzas" && (
                   <div className="space-y-6">
-                    <h2 className="text-2xl font-black text-sky-950">
-                      Libro Mayor de Donaciones y Trazabilidad
-                    </h2>
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div>
+                        <h2 className="text-2xl font-black text-sky-950">
+                          Libro Mayor de Donaciones y Trazabilidad
+                        </h2>
+                        <p className="text-xs text-slate-500">
+                          Habilita o deshabilita la recepción pública de donaciones en tiempo real.
+                        </p>
+                      </div>
+
+                      {/* CONTROL PRINCIPAL EN PESTAÑA FINANZAS */}
+                      <button
+                        type="button"
+                        onClick={handleToggleDonationsModule}
+                        className={`px-5 py-2.5 rounded-2xl text-xs font-extrabold shadow transition cursor-pointer flex items-center gap-2 ${
+                          donationsEnabled
+                            ? "bg-amber-500 hover:bg-amber-600 text-slate-950"
+                            : "bg-emerald-600 hover:bg-emerald-700 text-white"
+                        }`}
+                      >
+                        {donationsEnabled
+                          ? "Deshabilitar Donaciones (Modo Próximamente)"
+                          : "Habilitar Módulo de Donaciones"}
+                      </button>
+                    </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                       <div className="p-4 rounded-2xl bg-emerald-50 border border-emerald-100">
@@ -3872,9 +4031,9 @@ export default function App() {
               Donaciones
             </button>
           </div>
-         <div className="text-[11px] text-slate-500 text-center sm:text-right">
-  Desarrollado por <strong>Cody Go</strong> y <strong>TechNova</strong>
-</div>
+          <div className="text-[11px] text-slate-500 text-center sm:text-right">
+            Desarrollado por <strong>Cody Go</strong> y <strong>TechNova</strong>
+          </div>
         </div>
       </footer>
     </div>
